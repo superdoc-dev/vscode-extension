@@ -1,0 +1,212 @@
+// SuperDoc integration for VS Code webview
+
+// Import SuperDoc styles as text and inject
+import superdocCss from 'superdoc/style.css';
+
+// Debug function to write messages to a debug div
+function debug(message) {
+    console.log(message);
+    if (document && document.body) {
+        // Create or update debug div without destroying other elements
+        let debugDiv = document.getElementById('debug-output');
+        if (!debugDiv) {
+            debugDiv = document.createElement('div');
+            debugDiv.id = 'debug-output';
+            debugDiv.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; z-index: 9999; color: white; padding: 10px; background: #333; font-family: monospace; font-size: 12px; border-bottom: 1px solid #555;';
+            document.body.appendChild(debugDiv);
+        }
+        debugDiv.textContent = message;
+    }
+}
+
+debug('🚀 Webview main.js loading...');
+
+// Test if DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeWebview);
+} else {
+    initializeWebview();
+}
+
+function initializeWebview() {
+    debug('📱 DOM ready, initializing webview...');
+    
+    // Inject SuperDoc CSS
+    if (superdocCss) {
+        const style = document.createElement('style');
+        style.textContent = superdocCss;
+        document.head.appendChild(style);
+        debug('📎 SuperDoc CSS injected');
+    }
+}
+
+const vscode = acquireVsCodeApi();
+debug('📱 VS Code API acquired');
+
+// Import SuperDoc - will be bundled by esbuild
+import { SuperDoc } from 'superdoc';
+debug('📚 SuperDoc imported');
+
+let editor = null;
+let currentFileData = null;
+let saveTimeout = null;
+let isInitialLoad = true;
+
+// Configuration
+const AUTO_SAVE_DELAY = 1000; // milliseconds
+
+// Initialize editor with file data
+function initializeEditor(fileArrayBuffer) {
+    debug('🎯 Initializing editor with file buffer');
+    
+    try {
+        // Convert ArrayBuffer to File object
+        const file = new File([fileArrayBuffer], 'document.docx', {
+            type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        });
+
+        debug(`📄 File created: ${file.name}, ${file.size} bytes`);
+
+        // Clean up previous editor instance
+        if (editor) {
+            editor = null;
+        }
+
+        // Check if DOM elements exist
+        const superdocElement = document.getElementById('superdoc');
+        const toolbarElement = document.getElementById('superdoc-toolbar');
+        
+        if (!superdocElement) {
+            debug('❌ #superdoc element not found!');
+            return;
+        }
+        if (!toolbarElement) {
+            debug('❌ #superdoc-toolbar element not found!');
+            return;
+        }
+        
+        debug('✅ DOM elements found, creating SuperDoc...');
+
+        // Initialize SuperDoc
+        debug('🚀 Creating SuperDoc instance...');
+        
+        try {
+            editor = new SuperDoc({
+                selector: '#superdoc',
+                toolbar: '#superdoc-toolbar',
+                document: file,
+                documentMode: 'editing',
+                pagination: true,
+                rulers: true,
+                onReady: (event) => {
+                    debug('✅ SuperDoc is ready');
+                    isInitialLoad = false;
+                },
+                onEditorCreate: (event) => {
+                    debug('✅ Editor is created');
+                    setupAutoSave();
+                },
+                onChange: (event) => {
+                    if (!isInitialLoad) {
+                        debug('📝 Document changed');
+                        scheduleAutoSave();
+                    }
+                },
+                onError: (error) => {
+                    debug(`❌ SuperDoc error: ${error.message || error}`);
+                }
+            });
+            
+            debug('✅ SuperDoc constructor completed');
+            
+            // Set a timeout to check if SuperDoc initializes
+            setTimeout(() => {
+                if (!isInitialLoad) {
+                    debug('⏱️ SuperDoc initialized successfully');
+                } else {
+                    debug('⏱️ SuperDoc still initializing after 5 seconds...');
+                }
+            }, 5000);
+            
+        } catch (constructorError) {
+            debug(`❌ SuperDoc constructor failed: ${constructorError.message}`);
+        }
+        
+    } catch (error) {
+        debug(`❌ Failed to initialize SuperDoc: ${error.message}`);
+    }
+}
+
+// Setup auto-save functionality with debouncing
+function setupAutoSave() {
+    if (!editor) return;
+}
+
+// Schedule auto-save with debouncing
+function scheduleAutoSave() {
+    // Clear existing timeout
+    if (saveTimeout) {
+        clearTimeout(saveTimeout);
+    }
+
+    // Schedule new save
+    saveTimeout = setTimeout(() => {
+        saveDocument();
+    }, AUTO_SAVE_DELAY);
+}
+
+// Save document back to VS Code
+async function saveDocument() {
+    if (!editor) return;
+
+    try {
+        // Export the document as blob
+        const blob = await editor.export({
+            format: 'docx'
+        });
+
+        // Convert blob to ArrayBuffer
+        const arrayBuffer = await blob.arrayBuffer();
+        
+        // Send the updated content back to VS Code
+        vscode.postMessage({
+            type: 'update',
+            content: new Uint8Array(arrayBuffer)
+        });
+
+        debug('💾 Document saved');
+    } catch (error) {
+        debug(`❌ Error saving document: ${error.message}`);
+    }
+}
+
+// Handle messages from VS Code
+window.addEventListener('message', async event => {
+    const message = event.data;
+    debug(`📨 Received message from VS Code: ${message.type}`);
+    
+    switch (message.type) {
+        case 'update':
+            // Receive document data from VS Code
+            if (message.content && message.content.data) {
+                currentFileData = new Uint8Array(message.content.data).buffer;
+                debug(`📊 File data received: ${currentFileData.byteLength} bytes`);
+                initializeEditor(currentFileData);
+            }
+            break;
+    }
+});
+
+// Notify VS Code that the webview is ready
+debug('✋ Notifying VS Code that webview is ready');
+vscode.postMessage({ type: 'ready' });
+
+// Handle keyboard shortcuts
+document.addEventListener('keydown', (event) => {
+    // Ctrl/Cmd + S to save
+    if ((event.ctrlKey || event.metaKey) && event.key === 's') {
+        event.preventDefault();
+        saveDocument();
+        vscode.postMessage({ type: 'save' });
+    }
+});
