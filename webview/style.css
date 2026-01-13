@@ -8,7 +8,7 @@ body {
     font-size: var(--vscode-font-size);
     font-weight: var(--vscode-font-weight);
     color: var(--vscode-foreground);
-    background-color: var(--vscode-editor-background);
+    background-color: white;
 }
 
 #superdoc-toolbar {
@@ -17,33 +17,35 @@ body {
     left: 0;
     right: 0;
     z-index: 1000;
-    background-color: var(--vscode-editor-background);
-    border-bottom: 1px solid var(--vscode-panel-border);
+    background-color: white;
+    border-bottom: 1px solid #e0e0e0;
 }
 
 #superdoc {
     position: absolute;
-    top: 50px; /* Adjust based on toolbar height */
+    top: 50px;
     left: 0;
     right: 0;
     bottom: 0;
     overflow: auto;
+    display: flex;
+    justify-content: center;
 }
 
-/* Override SuperDoc theme to match VS Code */
+/* Override SuperDoc theme */
 .superdoc-container {
-    background-color: var(--vscode-editor-background);
+    background-color: white;
 }
 
 .superdoc-page {
-    background-color: var(--vscode-editor-background);
-    box-shadow: 0 2px 8px var(--vscode-widget-shadow);
+    background-color: white;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
-/* Adjust toolbar styling for VS Code theme */
+/* Adjust toolbar styling */
 .superdoc-toolbar {
-    background-color: var(--vscode-editor-background) !important;
-    border-bottom: 1px solid var(--vscode-panel-border) !important;
+    background-color: white !important;
+    border-bottom: 1px solid #e0e0e0 !important;
 }
 
 .superdoc-toolbar button {
