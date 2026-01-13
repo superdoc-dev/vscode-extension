@@ -89,8 +89,48 @@ export class SuperDocEditorProvider implements vscode.CustomEditorProvider<Super
       }
     });
 
+    // Watch for external file changes (e.g., from LLM or other processes)
+    const fileDir = vscode.Uri.joinPath(document.uri, '..');
+    const fileName = path.basename(document.uri.fsPath);
+    const fileWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(fileDir, fileName)
+    );
+
+    const SAVE_DEBOUNCE_MS = 1000; // Ignore changes within 1s of our own save
+
+    fileWatcher.onDidChange(async (uri) => {
+      if (uri.fsPath !== document.uri.fsPath) {
+        return;
+      }
+
+      // Ignore if we just saved (to avoid reloading our own changes)
+      const timeSinceSave = Date.now() - document.lastSaveTime;
+      if (timeSinceSave < SAVE_DEBOUNCE_MS) {
+        console.log('🔄 Ignoring file change - recent save detected');
+        return;
+      }
+
+      console.log('📂 External file change detected, reloading:', uri.fsPath);
+      try {
+        await document.reloadFromDisk();
+      } catch (error) {
+        console.error('❌ Failed to reload document:', error);
+      }
+    });
+
+    // Listen for document content changes (from external reload) and push to webview
+    const contentChangeListener = document.onDidChangeContent((newData) => {
+      console.log('📤 Pushing reloaded content to webview, size:', newData.length);
+      webviewPanel.webview.postMessage({
+        type: 'update',
+        content: { data: Array.from(newData) },
+      });
+    });
+
     webviewPanel.onDidDispose(() => {
       messageListener.dispose();
+      fileWatcher.dispose();
+      contentChangeListener.dispose();
     });
   }
 
@@ -161,6 +201,10 @@ export class SuperDocEditorProvider implements vscode.CustomEditorProvider<Super
         case 'info':
           vscode.window.showInformationMessage(message.message);
           break;
+
+        case 'debug':
+          console.log('[Webview]', message.message);
+          break;
       }
     });
   }
@@ -214,6 +258,7 @@ export class SuperDocEditorProvider implements vscode.CustomEditorProvider<Super
 export class SuperDocDocument implements vscode.CustomDocument {
   private _documentData: Uint8Array;
   private _savedData: Uint8Array;
+  private _lastSaveTime: number = 0;
   private readonly _onDidChange = new vscode.EventEmitter<{
     readonly undo?: () => void;
     readonly redo?: () => void;
@@ -223,12 +268,19 @@ export class SuperDocDocument implements vscode.CustomDocument {
   private readonly _onDidDispose = new vscode.EventEmitter<void>();
   public readonly onDidDispose = this._onDidDispose.event;
 
+  private readonly _onDidChangeContent = new vscode.EventEmitter<Uint8Array>();
+  public readonly onDidChangeContent = this._onDidChangeContent.event;
+
   private constructor(
     public readonly uri: vscode.Uri,
     initialData: Uint8Array
   ) {
     this._documentData = initialData;
     this._savedData = initialData;
+  }
+
+  get lastSaveTime(): number {
+    return this._lastSaveTime;
   }
 
   /**
@@ -273,6 +325,7 @@ export class SuperDocDocument implements vscode.CustomDocument {
    * Save the document to disk
    */
   async save(cancellation?: vscode.CancellationToken): Promise<void> {
+    this._lastSaveTime = Date.now();
     await this.saveAs(this.uri, cancellation);
     this._savedData = this._documentData;
   }
@@ -294,6 +347,16 @@ export class SuperDocDocument implements vscode.CustomDocument {
     const data = await vscode.workspace.fs.readFile(this.uri);
     this._documentData = data;
     this._savedData = data;
+  }
+
+  /**
+   * Reload from disk (for external changes) and notify listeners
+   */
+  async reloadFromDisk(): Promise<void> {
+    const data = await vscode.workspace.fs.readFile(this.uri);
+    this._documentData = data;
+    this._savedData = data;
+    this._onDidChangeContent.fire(data);
   }
 
   /**
@@ -319,6 +382,7 @@ export class SuperDocDocument implements vscode.CustomDocument {
   dispose(): void {
     this._onDidDispose.fire();
     this._onDidChange.dispose();
+    this._onDidChangeContent.dispose();
     this._onDidDispose.dispose();
   }
 }

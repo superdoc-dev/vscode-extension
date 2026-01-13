@@ -3,9 +3,17 @@
 // Import SuperDoc styles as text and inject
 import superdocCss from 'superdoc/style.css';
 
-// Debug function to write messages to a debug div
+// Debug function to write messages to a debug div and VS Code
+let vscode = null; // Will be set after acquireVsCodeApi()
+
 function debug(message) {
     console.log(message);
+
+    // Post to VS Code for logging in output panel
+    if (vscode) {
+        vscode.postMessage({ type: 'debug', message });
+    }
+
     if (document && document.body) {
         // Create or update debug div without destroying other elements
         let debugDiv = document.getElementById('debug-output');
@@ -40,7 +48,7 @@ function initializeWebview() {
     }
 }
 
-const vscode = acquireVsCodeApi();
+vscode = acquireVsCodeApi();
 debug('📱 VS Code API acquired');
 
 // Import SuperDoc - will be bundled by esbuild
@@ -58,7 +66,7 @@ const AUTO_SAVE_DELAY = 1000; // milliseconds
 // Initialize editor with file data
 function initializeEditor(fileArrayBuffer) {
     debug('🎯 Initializing editor with file buffer');
-    
+
     try {
         // Convert ArrayBuffer to File object
         const file = new File([fileArrayBuffer], 'document.docx', {
@@ -69,12 +77,31 @@ function initializeEditor(fileArrayBuffer) {
 
         // Clean up previous editor instance
         if (editor) {
+            debug('🧹 Cleaning up previous editor instance');
+            try {
+                if (editor.destroy) {
+                    editor.destroy();
+                }
+            } catch (e) {
+                debug(`⚠️ Error destroying editor: ${e.message}`);
+            }
             editor = null;
         }
+
+        // Reset state for new editor
+        isInitialLoad = true;
 
         // Check if DOM elements exist
         const superdocElement = document.getElementById('superdoc');
         const toolbarElement = document.getElementById('superdoc-toolbar');
+
+        // Clear existing content from containers
+        if (superdocElement) {
+            superdocElement.innerHTML = '';
+        }
+        if (toolbarElement) {
+            toolbarElement.innerHTML = '';
+        }
         
         if (!superdocElement) {
             debug('❌ #superdoc element not found!');
