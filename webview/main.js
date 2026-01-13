@@ -101,16 +101,10 @@ function initializeEditor(fileArrayBuffer) {
                 onReady: (event) => {
                     debug('✅ SuperDoc is ready');
                     isInitialLoad = false;
+                    setupEditorListeners();
                 },
                 onEditorCreate: (event) => {
                     debug('✅ Editor is created');
-                    setupAutoSave();
-                },
-                onChange: (event) => {
-                    if (!isInitialLoad) {
-                        debug('📝 Document changed');
-                        scheduleAutoSave();
-                    }
                 },
                 onError: (error) => {
                     debug(`❌ SuperDoc error: ${error.message || error}`);
@@ -137,9 +131,28 @@ function initializeEditor(fileArrayBuffer) {
     }
 }
 
-// Setup auto-save functionality with debouncing
-function setupAutoSave() {
-    if (!editor) return;
+// Setup editor listeners for content changes (debounced save on update)
+function setupEditorListeners() {
+    if (!editor?.activeEditor) {
+        debug('❌ No editor or activeEditor available');
+        return;
+    }
+
+    debug('🎧 Setting up editor update listener...');
+
+    // Listen for editor updates - use this for debounced save
+    editor.activeEditor.on('update', async ({ editor: editorInstance }) => {
+        if (isInitialLoad) return;
+
+        // Log the HTML representation of the editor on each update
+        const html = editorInstance.getHTML();
+        debug(`📝 Content updated: ${html?.length || 0} chars`);
+
+        // Schedule debounced auto-save
+        scheduleAutoSave();
+    });
+
+    debug('✅ Editor update listener ready');
 }
 
 // Schedule auto-save with debouncing
@@ -157,24 +170,37 @@ function scheduleAutoSave() {
 
 // Save document back to VS Code
 async function saveDocument() {
-    if (!editor) return;
+    if (!editor) {
+        debug('❌ No editor available for saving');
+        return;
+    }
 
     try {
+        debug('💾 Starting document save...');
+        
         // Export the document as blob
         const blob = await editor.export({
             format: 'docx'
         });
 
-        // Convert blob to ArrayBuffer
+        if (!blob) {
+            debug('❌ Failed to export - no blob returned');
+            return;
+        }
+
+        debug(`📦 Exported blob size: ${blob.size} bytes`);
+
+        // Convert blob to ArrayBuffer, then to plain array for serialization
         const arrayBuffer = await blob.arrayBuffer();
-        
+        const contentArray = Array.from(new Uint8Array(arrayBuffer));
+
         // Send the updated content back to VS Code
         vscode.postMessage({
             type: 'update',
-            content: new Uint8Array(arrayBuffer)
+            content: contentArray
         });
 
-        debug('💾 Document saved');
+        debug(`✅ Document sent to VS Code (${contentArray.length} bytes)`);
     } catch (error) {
         debug(`❌ Error saving document: ${error.message}`);
     }

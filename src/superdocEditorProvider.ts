@@ -140,8 +140,12 @@ export class SuperDocEditorProvider implements vscode.CustomEditorProvider<Super
       switch (message.type) {
         case 'update':
           // Document was edited in SuperDoc
+          console.log('📥 Received update from webview, size:', message.content?.length);
           const newContent = new Uint8Array(message.content);
           document.update(newContent);
+          // Auto-save to disk
+          await document.save();
+          console.log('💾 Document saved to disk:', document.uri.fsPath);
           break;
 
         case 'save':
