@@ -1,24 +1,31 @@
-# SuperDoc VS Code Extension
+# **SuperDoc VS Code Extension**
 
-SuperDoc in VS Code.
+<img src="logo.png" alt="SuperDoc Logo" width="200">
 
-## Setup
+Edit and view DOCX files inside Visual Studio Code with [SuperDoc](https://github.com/superdoc-dev/superdoc).
 
-```bash
-cd superdoc-vscode-extension
+## **Features**
+
+- **Edit DOCX in VS Code** - Keep your code and documents open side-by-side
+- **Live reload** - When an AI agent or external process modifies your file, your document automatically refreshes
+- **Auto-save** - Changes are saved as you type
+
+## **Usage**
+
+Once installed, any `.docx` file you open will automatically use SuperDoc. Just open a file and start editing.
+
+## **Install**
+To be notified when live on Marketplace, star this repository.
+
+Want it now? You can clone the repo and run it from source.
+
+```
 npm install
 npm run compile
 ```
 
-## Run in Debug Mode
+Then press `F5` in VS Code to launch a development window.
 
-1. Open this folder in VS Code
-2. Press `F5` (or Run > Start Debugging)
-3. A new VS Code window opens with the extension loaded
-4. Open any `.docx` file to test
+## **License**
 
-## Features
-
-- Edit .docx files directly in VS Code
-- Auto-save on changes (1 second debounce)
-- Auto-reload when file changes externally (e.g., from another process)
+This project is licensed under the GNU Affero General Public License version 3.0 (AGPLv3). See the full license at [gnu.org/licenses/agpl-3.0](https://www.gnu.org/licenses/agpl-3.0.en.html).

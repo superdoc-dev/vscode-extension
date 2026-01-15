@@ -4,8 +4,9 @@
   "description": "Open and edit Word documents (.docx) directly in VS Code using SuperDoc",
   "version": "0.1.0",
   "publisher": "superdoc",
+  "repository": "https://github.com/superdoc-dev/vscode-extension",
   "engines": {
-    "vscode": "^1.74.0"
+    "vscode": "^1.107.0"
   },
   "categories": [
     "Other",
@@ -17,9 +18,6 @@
     "document",
     "editor",
     "superdoc"
-  ],
-  "activationEvents": [
-    "*"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -80,7 +78,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.19.27",
-    "@types/vscode": "^1.108.0",
+    "@types/vscode": "^1.107.0",
     "@typescript-eslint/eslint-plugin": "^6.21.0",
     "@typescript-eslint/parser": "^6.21.0",
     "@vscode/vsce": "^2.32.0",
@@ -90,6 +88,6 @@
   },
   "license": "MIT",
   "dependencies": {
-    "superdoc": "^1.4.0"
+    "superdoc": "^1.5.0"
   }
 }
