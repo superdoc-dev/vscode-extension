@@ -1,9 +1,20 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as https from 'https';
+import * as http from 'http';
+
+// Debug logging - set to false to disable verbose logs
+const DEBUG_ENABLED = true;
 
 function debug(message: string) {
-  console.log('[SuperDoc - Provider]', message);
+  if (DEBUG_ENABLED) {
+    console.log('[SuperDoc - Provider]', message);
+  }
 }
+
+// Command folder for Claude API
+const SUPERDOC_FOLDER = '.superdoc';
 
 export class SuperDocEditorProvider implements vscode.CustomEditorProvider<SuperDocDocument> {
   public static readonly viewType = 'superdoc.docxEditor';
@@ -55,9 +66,15 @@ export class SuperDocEditorProvider implements vscode.CustomEditorProvider<Super
     // Watch for external file changes
     const fileWatcher = this.setupFileWatcher(document, webviewPanel.webview);
 
+    // Watch for command file (Claude API)
+    const commandWatcher = this.setupCommandWatcher(document, webviewPanel.webview);
+
     webviewPanel.onDidDispose(() => {
       readyListener.dispose();
       fileWatcher.dispose();
+      if (commandWatcher) {
+        commandWatcher.close();
+      }
     });
   }
 
@@ -85,6 +102,211 @@ export class SuperDocEditorProvider implements vscode.CustomEditorProvider<Super
     });
 
     return watcher;
+  }
+
+  /**
+   * Get the command file path for a document: .superdoc/{docname}.json
+   */
+  private getCommandFilePath(documentUri: vscode.Uri): string {
+    const docDir = path.dirname(documentUri.fsPath);
+    const docName = path.basename(documentUri.fsPath, '.docx');
+    return path.join(docDir, SUPERDOC_FOLDER, `${docName}.json`);
+  }
+
+  /**
+   * Setup watcher for command file (Claude API)
+   * Each document watches its own file: .superdoc/{docname}.json
+   */
+  private setupCommandWatcher(document: SuperDocDocument, webview: vscode.Webview): fs.FSWatcher | null {
+    const cmdFilePath = this.getCommandFilePath(document.uri);
+    const superdocDir = path.dirname(cmdFilePath);
+    const cmdFileName = path.basename(cmdFilePath);
+    let processing = false;
+
+    debug(`Setting up command watcher: ${cmdFilePath}`);
+
+    // Ensure .superdoc folder exists
+    if (!fs.existsSync(superdocDir)) {
+      fs.mkdirSync(superdocDir, { recursive: true });
+      debug(`Created folder: ${superdocDir}`);
+    }
+
+    const processIfExists = async () => {
+      if (processing || !fs.existsSync(cmdFilePath)) return;
+
+      try {
+        const content = fs.readFileSync(cmdFilePath, 'utf-8');
+        const data = JSON.parse(content);
+
+        // Only process if it's a command (has 'command' field), not a response
+        if (!data.command) return;
+
+        processing = true;
+        await this.processCommandFile(cmdFilePath, data, webview, document);
+      } catch {
+        // Ignore parse errors or missing file
+      } finally {
+        processing = false;
+      }
+    };
+
+    try {
+      const watcher = fs.watch(superdocDir, (eventType, filename) => {
+        if (filename === cmdFileName) {
+          processIfExists();
+        }
+      });
+
+      // Check if command file already exists
+      processIfExists();
+
+      return watcher;
+    } catch (error) {
+      debug(`Failed to setup command watcher: ${error}`);
+      return null;
+    }
+  }
+
+  /**
+   * Process a command and send to webview
+   */
+  private async processCommandFile(
+    cmdFilePath: string,
+    cmd: { id: string; command: string; args?: Record<string, unknown> },
+    webview: vscode.Webview,
+    document: SuperDocDocument
+  ): Promise<void> {
+    debug(`Processing command: ${cmd.command} (id: ${cmd.id})`);
+
+    // Store the file path for response writing
+    this.pendingCommands.set(cmd.id, cmdFilePath);
+
+    let args = cmd.args || {};
+
+    // Special handling for insertImage - convert URL/path to base64
+    if (cmd.command === 'insertImage' && args.src) {
+      try {
+        args = { ...args };
+        const src = args.src as string;
+
+        if (!src.startsWith('data:')) {
+          debug(`Converting image source to base64: ${src.substring(0, 100)}...`);
+          const docDir = path.dirname(document.uri.fsPath);
+          args.src = await this.convertImageToBase64(src, docDir);
+          debug(`Image converted, base64 length: ${(args.src as string).length}`);
+        }
+      } catch (error) {
+        // Write error response directly
+        this.writeCommandResponse(cmd.id, {
+          id: cmd.id,
+          success: false,
+          error: `Failed to load image: ${error}`
+        });
+        return;
+      }
+    }
+
+    webview.postMessage({
+      type: 'executeCommand',
+      id: cmd.id,
+      command: cmd.command,
+      args
+    });
+  }
+
+  /**
+   * Convert image URL or file path to base64 data URI
+   */
+  private async convertImageToBase64(src: string, docDir: string): Promise<string> {
+    // Check if it's a URL
+    if (src.startsWith('http://') || src.startsWith('https://')) {
+      return this.fetchImageAsBase64(src);
+    }
+
+    // Otherwise treat as file path
+    let filePath = src;
+    if (!path.isAbsolute(src)) {
+      filePath = path.join(docDir, src);
+    }
+
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`Image file not found: ${filePath}`);
+    }
+
+    const buffer = fs.readFileSync(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const mimeType = this.getMimeType(ext);
+    return `data:${mimeType};base64,${buffer.toString('base64')}`;
+  }
+
+  /**
+   * Fetch image from URL and convert to base64
+   */
+  private fetchImageAsBase64(url: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const protocol = url.startsWith('https://') ? https : http;
+
+      protocol.get(url, { headers: { 'User-Agent': 'VSCode-SuperDoc/1.0' } }, (response) => {
+        // Handle redirects
+        if (response.statusCode === 301 || response.statusCode === 302) {
+          const redirectUrl = response.headers.location;
+          if (redirectUrl) {
+            this.fetchImageAsBase64(redirectUrl).then(resolve).catch(reject);
+            return;
+          }
+        }
+
+        if (response.statusCode !== 200) {
+          reject(new Error(`HTTP ${response.statusCode}: Failed to fetch image`));
+          return;
+        }
+
+        const contentType = response.headers['content-type'] || 'image/png';
+        const chunks: Buffer[] = [];
+
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => {
+          const buffer = Buffer.concat(chunks);
+          resolve(`data:${contentType};base64,${buffer.toString('base64')}`);
+        });
+        response.on('error', reject);
+      }).on('error', reject);
+    });
+  }
+
+  /**
+   * Get MIME type from file extension
+   */
+  private getMimeType(ext: string): string {
+    const mimeTypes: Record<string, string> = {
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.svg': 'image/svg+xml',
+      '.bmp': 'image/bmp',
+      '.ico': 'image/x-icon'
+    };
+    return mimeTypes[ext] || 'image/png';
+  }
+
+  // Track pending commands to know where to write responses
+  private pendingCommands = new Map<string, string>();
+
+  /**
+   * Write response by overwriting the command file
+   */
+  private writeCommandResponse(cmdId: string, result: { id: string; success: boolean; result?: unknown; error?: string }): void {
+    const cmdFilePath = this.pendingCommands.get(cmdId);
+    if (!cmdFilePath) {
+      debug(`No pending command found for id: ${cmdId}`);
+      return;
+    }
+
+    debug(`Writing response: ${result.id} success=${result.success}`);
+    fs.writeFileSync(cmdFilePath, JSON.stringify(result, null, 2));
+    this.pendingCommands.delete(cmdId);
   }
 
   private getWebviewContent(webview: vscode.Webview): string {
@@ -126,6 +348,16 @@ export class SuperDocEditorProvider implements vscode.CustomEditorProvider<Super
         case 'debug':
           debug(message.message);
           break;
+        case 'commandResult': {
+          // Overwrite command file with response
+          this.writeCommandResponse(message.id, {
+            id: message.id,
+            success: message.success,
+            result: message.result,
+            error: message.error
+          });
+          break;
+        }
       }
     });
   }

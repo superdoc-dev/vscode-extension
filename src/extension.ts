@@ -30,7 +30,6 @@ export function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push(providerRegistration, openCommand);
         debug('Registered extension');
         debug('Activation complete');
-        vscode.window.showInformationMessage('SuperDoc extension activated.');
     } catch (error) {
         debug(`Activation error - ${error}`);
         vscode.window.showErrorMessage(`Failed to activate SuperDoc: ${error}`);
