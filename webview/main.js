@@ -215,7 +215,7 @@ window.addEventListener('message', async event => {
         case 'executeCommand':
             debug(`Executing command: ${message.command}`);
             const result = await executeCommand(message.command, message.args || {});
-            vscode.postMessage({ type: 'commandResult', id: message.id, ...result });
+            vscode.postMessage({ type: 'commandResult', ...result });
             break;
     }
 });
@@ -234,6 +234,8 @@ const COMMANDS = {
     deleteNode: cmdDeleteNode,
     insertTable: cmdInsertTable,
     addComment: cmdAddComment,
+    insertTableOfContents: cmdInsertTableOfContents,
+    deleteTableOfContents: cmdDeleteTableOfContents,
     undo: cmdUndo,
     redo: cmdRedo
 };
@@ -284,26 +286,59 @@ function setDocumentMode(mode) {
 
 function setAuthorIfProvided(author) {
     if (author?.name) {
-        editor.user = {
+        const user = {
             name: author.name,
             email: author.email || `${author.name.toLowerCase().replace(/\s+/g, '.')}@user.local`
         };
-        debug(`Author set to: ${editor.user.name}`);
+        // Set on both SuperDoc wrapper and Editor instance (track changes reads from editor.options.user)
+        editor.user = user;
+        const activeEditor = getActiveEditor();
+        if (activeEditor) {
+            activeEditor.options.user = user;
+        }
+        debug(`Author set to: ${user.name}`);
     }
 }
 
+function searchText(activeEditor, text) {
+    return activeEditor.commands.search(text, { highlight: false }) || [];
+}
+
 function findAnchor(activeEditor, anchor) {
-    const matches = activeEditor.commands.search(anchor, { highlight: false });
-    if (!matches || matches.length === 0) {
-        return null;
+    const matches = searchText(activeEditor, anchor);
+    return matches[0] || null;
+}
+
+function findMatch(activeEditor, search, occurrence) {
+    const matches = searchText(activeEditor, search);
+    if (matches.length === 0) {
+        return { error: `Text not found: "${search}"` };
     }
-    return matches[0];
+    const idx = occurrence ? parseInt(occurrence, 10) - 1 : 0;
+    if (idx < 0 || idx >= matches.length) {
+        return { error: `Occurrence ${occurrence} not found (only ${matches.length} matches)` };
+    }
+    return { match: matches[idx], matches };
 }
 
 function insertAtPosition(activeEditor, position, content) {
     activeEditor.view.focus();
     activeEditor.commands.setTextSelection({ from: position, to: position });
     activeEditor.commands.insertContent(content);
+}
+
+function selectRange(activeEditor, from, to) {
+    activeEditor.view.focus();
+    activeEditor.commands.setTextSelection({ from, to: to ?? from });
+}
+
+function applyScope(activeEditor, scope) {
+    activeEditor.view.focus();
+    if (scope === 'document') {
+        activeEditor.commands.selectAll();
+    } else if (scope?.from !== undefined && scope?.to !== undefined) {
+        activeEditor.commands.setTextSelection({ from: scope.from, to: scope.to });
+    }
 }
 
 function cmdGetText({ format } = {}) {
@@ -337,7 +372,7 @@ function cmdGetNodes({ type }) {
     if (error) return error;
     if (!type) return { success: false, error: 'Node type is required' };
 
-    const validTypes = ['paragraph', 'heading', 'table', 'tableRow', 'tableCell',
+    const validTypes = ['paragraph', 'table', 'tableRow', 'tableCell',
                         'bulletList', 'orderedList', 'listItem', 'image', 'blockquote'];
 
     if (!validTypes.includes(type)) {
@@ -352,53 +387,48 @@ function cmdGetNodes({ type }) {
         const to = pos + node.nodeSize;
         const text = node.textContent || '';
 
-        // Get additional attributes for certain node types
-        const attrs = {};
-        if (type === 'heading' && node.attrs?.level) {
-            attrs.level = node.attrs.level;
-        }
-
-        return {
+        const entry = {
             index,
             type,
             from,
             to,
-            text: text.substring(0, 100) + (text.length > 100 ? '...' : ''), // Truncate for readability
+            text: text.substring(0, 100) + (text.length > 100 ? '...' : ''),
             textLength: text.length,
-            ...attrs
         };
+
+        // For paragraphs, include numbering marker if present (e.g., "1.", "(A)", "•")
+        if (type === 'paragraph') {
+            try {
+                const dom = activeEditor.view.nodeDOM(pos);
+                const marker = dom?.getAttribute?.('data-marker-type');
+                if (marker) entry.marker = marker;
+            } catch {}
+        }
+
+        return entry;
     });
 
     debug(`getNodes: found ${result.length} ${type} nodes`);
     return { success: true, result: { nodes: result, count: result.length } };
 }
 
-async function cmdFormatText({ fontFamily, fontSize, color, highlight, bold, italic, underline, strikethrough, link, scope }) {
+async function cmdFormatText({ fontFamily, fontSize, color, highlight, bold, italic, underline, strikethrough, link, lineHeight, indent, spacingBefore, spacingAfter, scope }) {
     const { activeEditor, error } = requireActiveEditor();
     if (error) return error;
 
-    // Check if at least one format option is provided
     const hasFormat = fontFamily || fontSize || color || highlight !== undefined ||
                       bold !== undefined || italic !== undefined ||
                       underline !== undefined || strikethrough !== undefined ||
-                      link !== undefined;
+                      link !== undefined ||
+                      lineHeight !== undefined || indent !== undefined ||
+                      spacingBefore !== undefined || spacingAfter !== undefined;
     if (!hasFormat) {
-        return { success: false, error: 'At least one format option required: fontFamily, fontSize, color, highlight, bold, italic, underline, strikethrough, or link' };
+        return { success: false, error: 'At least one format option required' };
     }
 
-    // Temporarily switch to editing mode for formatting (no track changes)
-    // Formatting changes are applied directly - tracking them is slow and usually not desired
     const previousMode = editor.documentMode;
     editor.setDocumentMode('editing');
-
-    // Handle scope
-    activeEditor.view.focus();
-    if (scope === 'document') {
-        activeEditor.commands.selectAll();
-    } else if (scope?.from !== undefined && scope?.to !== undefined) {
-        activeEditor.commands.setTextSelection({ from: scope.from, to: scope.to });
-    }
-    // If no scope specified, operates on current selection
+    applyScope(activeEditor, scope);
 
     const applied = [];
 
@@ -469,6 +499,52 @@ async function cmdFormatText({ fontFamily, fontSize, color, highlight, bold, ita
         applied.push('link: removed');
     }
 
+    // Indentation (in points) — uses setTextIndentation which sets paragraphProperties.indent.left
+    if (indent !== undefined) {
+        const indentPoints = parseFloat(indent);
+        if (!Number.isNaN(indentPoints)) {
+            if (indentPoints === 0) {
+                activeEditor.commands.unsetTextIndentation();
+            } else {
+                activeEditor.commands.setTextIndentation(indentPoints);
+            }
+            applied.push(`indent: ${indent}`);
+        }
+    }
+
+    // Line height — uses setLineHeight which sets paragraphProperties.spacing.line
+    if (lineHeight !== undefined) {
+        const lh = parseFloat(lineHeight);
+        if (!Number.isNaN(lh)) {
+            if (lh === 0) {
+                activeEditor.commands.unsetLineHeight();
+            } else {
+                activeEditor.commands.setLineHeight(lh);
+            }
+            applied.push(`lineHeight: ${lineHeight}`);
+        }
+    }
+
+    // Spacing before/after — set via paragraphProperties.spacing (values in twips, 1pt = 20 twips)
+    if (spacingBefore !== undefined) {
+        const pts = parseFloat(spacingBefore);
+        if (!Number.isNaN(pts)) {
+            activeEditor.commands.updateAttributes('paragraph', {
+                'paragraphProperties.spacing.before': pts * 20,
+            });
+            applied.push(`spacingBefore: ${spacingBefore}`);
+        }
+    }
+    if (spacingAfter !== undefined) {
+        const pts = parseFloat(spacingAfter);
+        if (!Number.isNaN(pts)) {
+            activeEditor.commands.updateAttributes('paragraph', {
+                'paragraphProperties.spacing.after': pts * 20,
+            });
+            applied.push(`spacingAfter: ${spacingAfter}`);
+        }
+    }
+
     // Restore previous mode
     editor.setDocumentMode(previousMode);
 
@@ -482,19 +558,13 @@ async function cmdReplaceText({ search, replacement, occurrence, author }) {
     if (error) return error;
     if (!search) return { success: false, error: 'Search text is required' };
 
-    setAuthorIfProvided(author);
-    setDocumentMode('suggesting');
-
-    // Use SuperDoc's search for accurate positions (handles cross-paragraph matching)
-    const matches = activeEditor.commands.search(search, { highlight: false });
-
-    if (!matches || matches.length === 0) {
+    // Search for matches first (before changing document mode)
+    const matches = searchText(activeEditor, search);
+    if (matches.length === 0) {
         return { success: false, error: `Text not found: "${search}"` };
     }
 
-    debug(`replaceText: found ${matches.length} matches`);
-
-    // Determine which matches to replace
+    // Validate occurrence if specified
     let toReplace;
     if (occurrence != null) {
         const idx = parseInt(occurrence, 10) - 1;
@@ -507,10 +577,14 @@ async function cmdReplaceText({ search, replacement, occurrence, author }) {
         toReplace = [...matches].reverse();
     }
 
+    setAuthorIfProvided(author);
+    setDocumentMode('suggesting');
+
+    debug(`replaceText: found ${matches.length} matches`);
+
     // Replace using proper positions from search
-    for (const match of toReplace) {
-        activeEditor.view.focus();
-        activeEditor.commands.setTextSelection({ from: match.from, to: match.to });
+    for (const m of toReplace) {
+        selectRange(activeEditor, m.from, m.to);
         activeEditor.commands.insertContent(replacement);
     }
 
@@ -525,29 +599,30 @@ async function cmdInsertContent({ content, position, author }) {
     if (error) return error;
     if (!content) return { success: false, error: 'Content is required' };
 
-    setAuthorIfProvided(author);
-    setDocumentMode('suggesting');
-
     const anchor = position?.after || position?.before;
     const insertAfter = Boolean(position?.after);
     const isEmptyDoc = activeEditor.state.doc.textContent.trim().length === 0;
 
+    // Validate before changing mode
     if (!anchor && !isEmptyDoc) {
         return { success: false, error: 'Position anchor required: use "after" or "before" with existing text' };
     }
 
-    if (isEmptyDoc) {
-        insertAtPosition(activeEditor, 1, content);
-        debug('insertContent: empty document');
-    } else {
+    // Find anchor before changing mode (if needed)
+    let insertPos = 1;
+    if (!isEmptyDoc) {
         const match = findAnchor(activeEditor, anchor);
         if (!match) {
             return { success: false, error: `Anchor text not found: "${anchor}"` };
         }
-        const insertPos = insertAfter ? match.to : match.from;
-        insertAtPosition(activeEditor, insertPos, content);
-        debug(`insertContent: ${insertAfter ? 'after' : 'before'} "${anchor}"`);
+        insertPos = insertAfter ? match.to : match.from;
     }
+
+    setAuthorIfProvided(author);
+    setDocumentMode('suggesting');
+
+    insertAtPosition(activeEditor, insertPos, content);
+    debug(isEmptyDoc ? 'insertContent: empty document' : `insertContent: ${insertAfter ? 'after' : 'before'} "${anchor}"`);
 
     await saveDocument();
     setDocumentMode('editing');
@@ -593,7 +668,7 @@ async function cmdDeleteNode({ type, index }) {
     if (!type) return { success: false, error: 'Node type is required' };
     if (index === undefined) return { success: false, error: 'Node index is required' };
 
-    const nodes = activeEditor.commands.getNodesOfType(type);
+    const nodes = activeEditor.getNodesOfType(type);
     if (!nodes || nodes.length === 0) {
         return { success: false, error: `No ${type} nodes found in document` };
     }
@@ -718,28 +793,239 @@ async function cmdRedo() {
     return { success: result };
 }
 
+/**
+ * Insert a table of contents with bookmarks and internal links.
+ *
+ * The LLM identifies heading entries (positions + levels) and passes them in.
+ * This command:
+ *   1. Inserts bookmarkStart/bookmarkEnd pairs at each heading (no style change)
+ *   2. Builds a proper tableOfContents node with link marks pointing to those bookmarks
+ *   3. Inserts the TOC at the specified position
+ *
+ * @param {Array} entries - [{level: 1-6, from: N, to: M}, ...] heading positions
+ * @param {Object} [position] - {after: "text"} or {before: "text"} or omit for beginning
+ * @param {string} [title] - TOC title (default: "Table of Contents", "" for none)
+ * @param {Object} [style] - {fontFamily, fontSize, color} for TOC styling. Bold + black by default.
+ * @param {Object} [author] - {name, email} for track changes attribution
+ */
+async function cmdInsertTableOfContents({ entries, position, title, style, author }) {
+    const { activeEditor, error } = requireActiveEditor();
+    if (error) return error;
+
+    if (!entries || !Array.isArray(entries) || entries.length === 0) {
+        return { success: false, error: 'entries is required: [{level: 1-6, from: N, to: M}, ...]' };
+    }
+
+    // Validate and read text for each entry from the document
+    const doc = activeEditor.state.doc;
+    const schema = activeEditor.state.schema;
+    const resolvedEntries = [];
+    const timestamp = Date.now();
+    for (let i = 0; i < entries.length; i++) {
+        const { level, from, to } = entries[i];
+        if (!level || !Number.isInteger(from) || !Number.isInteger(to)) {
+            return { success: false, error: `Entry ${i}: level, from, and to are required integers` };
+        }
+        if (level < 1 || level > 6) {
+            return { success: false, error: `Entry ${i}: level must be 1-6, got ${level}` };
+        }
+        if (from >= to || from < 0 || to > doc.content.size) {
+            return { success: false, error: `Entry ${i}: invalid range from=${from} to=${to} (doc size: ${doc.content.size})` };
+        }
+        let text = doc.textBetween(from, to, ' ').trim();
+        if (!text) {
+            return { success: false, error: `Entry ${i}: no text found at range ${from}-${to}` };
+        }
+        // Prepend numbering marker if the paragraph has one (e.g., "1.", "(A)")
+        try {
+            const dom = activeEditor.view.nodeDOM(from);
+            const marker = dom?.getAttribute?.('data-marker-type');
+            if (marker) text = `${marker} ${text}`;
+        } catch {}
+        const bookmarkName = `_Toc_${i}_${timestamp}`;
+        resolvedEntries.push({ level, from, to, text, bookmarkName });
+    }
+
+    // Resolve TOC insertion position before modifying the document
+    const anchor = position?.after || position?.before;
+    let insertPos = 1;
+    if (anchor) {
+        const match = findAnchor(activeEditor, anchor);
+        if (!match) {
+            return { success: false, error: `Anchor text not found: "${anchor}"` };
+        }
+        insertPos = position?.after ? match.to : match.from;
+    }
+
+    setAuthorIfProvided(author);
+    setDocumentMode('suggesting');
+
+    // Build everything in a single transaction for atomic undo
+    const tr = activeEditor.state.tr;
+
+    // Step 1: Insert bookmarks inside each heading paragraph (work backwards to preserve positions)
+    // Positions from getNodes: from = before <p>, to = after </p>
+    // Insert inside: from+1 = start of text content, to-1 = end of text content
+    const sortedForBookmarks = [...resolvedEntries].sort((a, b) => b.from - a.from);
+    for (const entry of sortedForBookmarks) {
+        const bmEnd = schema.nodes.bookmarkEnd.create({ id: entry.bookmarkName });
+        tr.insert(entry.to - 1, bmEnd);
+        const bmStart = schema.nodes.bookmarkStart.create({ name: entry.bookmarkName, id: entry.bookmarkName });
+        tr.insert(entry.from + 1, bmStart);
+    }
+
+    // Step 2: Build TOC node with plain text + link marks (styling applied after insertion via commands)
+    const tocParagraphs = [];
+    const tocTitle = title !== undefined ? title : 'Table of Contents';
+    const linkMarkType = schema.marks.link;
+
+    if (tocTitle) {
+        tocParagraphs.push(
+            schema.nodes.paragraph.create({}, [schema.text(tocTitle)])
+        );
+    }
+
+    const entryIndentLevels = [];
+    for (const entry of resolvedEntries) {
+        entryIndentLevels.push(entry.level);
+        const marks = [
+            linkMarkType.create({ href: null, anchor: entry.bookmarkName, name: entry.bookmarkName }),
+        ];
+        tocParagraphs.push(
+            schema.nodes.paragraph.create({}, [schema.text(entry.text, marks)])
+        );
+    }
+    const tocNode = schema.nodes.tableOfContents.create(
+        { instruction: `TOC \\o "1-${Math.max(...resolvedEntries.map(e => e.level))}"` },
+        tocParagraphs
+    );
+
+    // Step 3: Insert TOC node (position mapped through bookmark insertions)
+    const mappedInsertPos = tr.mapping.map(insertPos);
+    tr.insert(mappedInsertPos, tocNode);
+    activeEditor.view.dispatch(tr);
+
+    // Step 4: Apply styling and indentation via SuperDoc commands
+    // Switch to editing mode — formatting must not create track changes
+    setDocumentMode('editing');
+    // Helper: re-fetch TOC and compute a child paragraph's position (each command changes the doc)
+    const getTocChild = (childIdx) => {
+        const nodes = activeEditor.getNodesOfType('tableOfContents');
+        if (nodes.length === 0) return null;
+        const t = nodes[0];
+        let pos = t.pos + 1;
+        for (let c = 0; c < childIdx; c++) pos += t.node.child(c).nodeSize;
+        return { pos, node: t.node.child(childIdx), totalChildren: t.node.childCount };
+    };
+
+    const firstChild = getTocChild(0);
+    if (firstChild) {
+        // Apply base styling to each paragraph individually
+        // (TextSelection cannot span the TOC node, only its inline-content children)
+        for (let c = 0; c < firstChild.totalChildren; c++) {
+            const p = getTocChild(c);
+            if (!p) break;
+            selectRange(activeEditor, p.pos + 1, p.pos + p.node.nodeSize - 1);
+            if (style?.bold !== false) activeEditor.commands.setBold();
+            activeEditor.commands.setColor(style?.color || '#000000');
+            if (style?.fontFamily) activeEditor.commands.setFontFamily(style.fontFamily);
+            if (style?.fontSize) activeEditor.commands.setFontSize(style.fontSize);
+        }
+
+        // Apply larger font size to title
+        if (tocTitle && style?.fontSize) {
+            const sizeMatch = style.fontSize.match(/^(\d+(?:\.\d+)?)(pt|px)$/);
+            if (sizeMatch) {
+                const titleSize = `${parseFloat(sizeMatch[1]) + 2}${sizeMatch[2]}`;
+                const p = getTocChild(0);
+                if (p) {
+                    selectRange(activeEditor, p.pos + 1, p.pos + p.node.nodeSize - 1);
+                    activeEditor.commands.setFontSize(titleSize);
+                }
+            }
+        }
+
+        // Apply indentation per entry (level 1 = 0.5", level 2 = 1.0", etc.)
+        const titleOffset = tocTitle ? 1 : 0;
+        for (let i = 0; i < entryIndentLevels.length; i++) {
+            const p = getTocChild(i + titleOffset);
+            if (p) {
+                selectRange(activeEditor, p.pos + 1, p.pos + p.node.nodeSize - 1);
+                activeEditor.commands.setTextIndentation(entryIndentLevels[i] * 36);
+            }
+        }
+    }
+
+    await saveDocument();
+    setDocumentMode('editing');
+
+    debug(`insertTableOfContents: inserted TOC with ${resolvedEntries.length} entries and bookmarks`);
+    return {
+        success: true,
+        result: {
+            entriesCount: resolvedEntries.length,
+            entries: resolvedEntries.map(e => ({ level: e.level, text: e.text, bookmark: e.bookmarkName }))
+        }
+    };
+}
+
+/**
+ * Delete the table of contents node from the document.
+ * Optionally also removes the bookmarks that were created for TOC entries.
+ */
+async function cmdDeleteTableOfContents({ removeBookmarks } = {}) {
+    const { activeEditor, error } = requireActiveEditor();
+    if (error) return error;
+
+    const doc = activeEditor.state.doc;
+    const tr = activeEditor.state.tr;
+
+    // Collect all deletions in one pass, apply in a single transaction
+    let tocPos = null;
+    let tocNodeSize = null;
+    const bookmarksToRemove = [];
+
+    doc.descendants((node, pos) => {
+        if (node.type.name === 'tableOfContents' && tocPos === null) {
+            tocPos = pos;
+            tocNodeSize = node.nodeSize;
+        }
+        if (removeBookmarks &&
+            (node.type.name === 'bookmarkStart' || node.type.name === 'bookmarkEnd') &&
+            (node.attrs.name?.startsWith('_Toc_') || node.attrs.id?.startsWith('_Toc_'))) {
+            bookmarksToRemove.push({ pos, size: node.nodeSize });
+        }
+    });
+
+    if (tocPos === null) {
+        return { success: false, error: 'No table of contents found in document' };
+    }
+
+    // Combine TOC + bookmarks, sort backwards, delete in one transaction
+    const deletions = [{ pos: tocPos, size: tocNodeSize }, ...bookmarksToRemove];
+    deletions.sort((a, b) => b.pos - a.pos);
+    for (const del of deletions) {
+        tr.delete(del.pos, del.pos + del.size);
+    }
+    activeEditor.view.dispatch(tr);
+
+    await saveDocument();
+    debug('deleteTableOfContents: success');
+    return { success: true };
+}
+
 async function cmdAddComment({ search, comment, occurrence, author }) {
     const { activeEditor, error } = requireActiveEditor();
     if (error) return error;
     if (!search) return { success: false, error: 'Search text is required' };
     if (!comment) return { success: false, error: 'Comment text is required' };
 
-    // Find the text to comment on
-    const matches = activeEditor.commands.search(search, { highlight: false });
-    if (!matches || matches.length === 0) {
-        return { success: false, error: `Text not found: "${search}"` };
+    const { match, error: searchError } = findMatch(activeEditor, search, occurrence);
+    if (searchError) {
+        return { success: false, error: searchError };
     }
 
-    // Get target match
-    const idx = occurrence ? parseInt(occurrence, 10) - 1 : 0;
-    if (idx < 0 || idx >= matches.length) {
-        return { success: false, error: `Occurrence ${occurrence} not found (only ${matches.length} matches)` };
-    }
-    const match = matches[idx];
-
-    // Select the text range first (required by addComment)
-    activeEditor.view.focus();
-    activeEditor.commands.setTextSelection({ from: match.from, to: match.to });
+    selectRange(activeEditor, match.from, match.to);
 
     // Add comment via TipTap command
     const authorName = author?.name || editor.user?.name || 'Claude';

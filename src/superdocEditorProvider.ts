@@ -172,14 +172,14 @@ export class SuperDocEditorProvider implements vscode.CustomEditorProvider<Super
    */
   private async processCommandFile(
     cmdFilePath: string,
-    cmd: { id: string; command: string; args?: Record<string, unknown> },
+    cmd: { command: string; args?: Record<string, unknown> },
     webview: vscode.Webview,
     document: SuperDocDocument
   ): Promise<void> {
-    debug(`Processing command: ${cmd.command} (id: ${cmd.id})`);
+    debug(`Processing command: ${cmd.command}`);
 
     // Store the file path for response writing
-    this.pendingCommands.set(cmd.id, cmdFilePath);
+    this.pendingCommandFile = cmdFilePath;
 
     let args = cmd.args || {};
 
@@ -197,8 +197,7 @@ export class SuperDocEditorProvider implements vscode.CustomEditorProvider<Super
         }
       } catch (error) {
         // Write error response directly
-        this.writeCommandResponse(cmd.id, {
-          id: cmd.id,
+        this.writeCommandResponse({
           success: false,
           error: `Failed to load image: ${error}`
         });
@@ -208,7 +207,6 @@ export class SuperDocEditorProvider implements vscode.CustomEditorProvider<Super
 
     webview.postMessage({
       type: 'executeCommand',
-      id: cmd.id,
       command: cmd.command,
       args
     });
@@ -291,22 +289,21 @@ export class SuperDocEditorProvider implements vscode.CustomEditorProvider<Super
     return mimeTypes[ext] || 'image/png';
   }
 
-  // Track pending commands to know where to write responses
-  private pendingCommands = new Map<string, string>();
+  // Track the command file path for writing responses
+  private pendingCommandFile: string | null = null;
 
   /**
    * Write response by overwriting the command file
    */
-  private writeCommandResponse(cmdId: string, result: { id: string; success: boolean; result?: unknown; error?: string }): void {
-    const cmdFilePath = this.pendingCommands.get(cmdId);
-    if (!cmdFilePath) {
-      debug(`No pending command found for id: ${cmdId}`);
+  private writeCommandResponse(result: { success: boolean; result?: unknown; error?: string }): void {
+    if (!this.pendingCommandFile) {
+      debug('No pending command file to write response to');
       return;
     }
 
-    debug(`Writing response: ${result.id} success=${result.success}`);
-    fs.writeFileSync(cmdFilePath, JSON.stringify(result, null, 2));
-    this.pendingCommands.delete(cmdId);
+    debug(`Writing response: success=${result.success}`);
+    fs.writeFileSync(this.pendingCommandFile, JSON.stringify(result, null, 2));
+    this.pendingCommandFile = null;
   }
 
   private getWebviewContent(webview: vscode.Webview): string {
@@ -350,8 +347,7 @@ export class SuperDocEditorProvider implements vscode.CustomEditorProvider<Super
           break;
         case 'commandResult': {
           // Overwrite command file with response
-          this.writeCommandResponse(message.id, {
-            id: message.id,
+          this.writeCommandResponse({
             success: message.success,
             result: message.result,
             error: message.error
