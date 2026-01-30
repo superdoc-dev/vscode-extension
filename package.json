@@ -20,6 +20,9 @@
     "superdoc"
   ],
   "main": "./dist/extension.js",
+  "activationEvents": [
+    "onUri"
+  ],
   "contributes": {
     "customEditors": [
       {
@@ -88,6 +91,6 @@
   },
   "license": "MIT",
   "dependencies": {
-    "superdoc": "^1.5.0"
+    "superdoc": "^1.8.3"
   }
 }
