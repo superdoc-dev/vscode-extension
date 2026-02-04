@@ -1,31 +1,15 @@
-# **SuperDoc VS Code Extension**
+# ⚠️ This repository has been deprecated
 
-<img src="logo.png" alt="SuperDoc Logo" width="200">
+The SuperDoc VS Code Extension has been moved to the main [SuperDoc monorepo](https://github.com/superdoc-dev/superdoc).
 
-Edit and view DOCX files inside Visual Studio Code with [SuperDoc](https://github.com/superdoc-dev/superdoc).
+## New Location
 
-## **Features**
+📦 **Source code**: [`superdoc-dev/superdoc/apps/vscode-ext`](https://github.com/superdoc-dev/superdoc/tree/main/apps/vscode-ext)
 
-- **Edit DOCX in VS Code** - Keep your code and documents open side-by-side
-- **Live reload** - When an AI agent or external process modifies your file, your document automatically refreshes
-- **Auto-save** - Changes are saved as you type
+## Installation
 
-## **Usage**
+Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=superdoc.superdoc-vscode-ext) or search "SuperDoc" in VS Code extensions.
 
-Once installed, any `.docx` file you open will automatically use SuperDoc. Just open a file and start editing.
+## Contributing
 
-## **Install**
-To be notified when live on Marketplace, star this repository.
-
-Want it now? You can clone the repo and run it from source.
-
-```
-npm install
-npm run compile
-```
-
-Then press `F5` in VS Code to launch a development window.
-
-## **License**
-
-This project is licensed under the GNU Affero General Public License version 3.0 (AGPLv3). See the full license at [gnu.org/licenses/agpl-3.0](https://www.gnu.org/licenses/agpl-3.0.en.html).
+Please open issues and pull requests in the [main SuperDoc repository](https://github.com/superdoc-dev/superdoc).
